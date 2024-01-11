@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "chirp"
+version = "0.1.0"
+description = "Scripts, tools, and utilities for analyzing bird feeder live streams"
+authors = ["Nathan Litzinger <nlitz88@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+supervision = "^0.17.1"
+ultralytics = "^8.1.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
