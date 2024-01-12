@@ -43,12 +43,17 @@ def main():
     # Set camera parameters.
     feeder_camera = cv.VideoCapture(str(video_source_path))
     if not feeder_camera.isOpened():
-        print(f"Failed to open camera")
+        raise Exception(f"Failed to open camera")
     else:
-        print(f"Feeder camera framerate: {feeder_camera.get(cv.CAP_PROP_FPS)}")
+        video_framerate = feeder_camera.get(cv.CAP_PROP_FPS)
+        print(f"Feeder camera framerate: {video_framerate}")
+       
 
     # Load YOLO model weights.
     model = YOLO(model=model_weights_path)
+
+    # Initilize a ByteTrack tracker.
+    tracker = sv.ByteTrack(frame_rate=video_framerate)
 
     # Create a supervision bounding box annotator.
     bounding_box_annotator = sv.BoundingBoxAnnotator()
@@ -71,6 +76,13 @@ def main():
         result = model(frame)[0] # Only want the results for the single frame passed in.
         # Convert the results from ultralytics format to supervision's format.
         detections = sv.Detections.from_ultralytics(ultralytics_results=result)
+        # Pass detections to tracker. The tracker will update the
+        # "tracker_id"field for each detected instance.
+        # TODO: Figure out if this should be done BEFORE or AFTER we filter out
+        # detections from the detector. Something tells me ByteTrack does better
+        # by using any low confidence detections. But before NMS as well?
+        detections = tracker.update_with_detections(detections=detections)
+
         NMS_IOU_THRESHOLD = 0.5
         filtered_detections = detections.with_nms(threshold=NMS_IOU_THRESHOLD)
         # Filter out any remaining detections with confidence less than a
@@ -79,8 +91,8 @@ def main():
         filtered_detections = filtered_detections[filtered_detections.confidence < CONFIDENCE_THRESHOLD]
         
         # Create labels maintained by model.
-        # https://supervision.roboflow.com/how_to/detect_and_annotate/#annotate-image
-        labels = [model.names[class_id] for class_id in detections.class_id]
+        # https://supervision.roboflow.com/how_to/track_objects/#annotate-video-with-tracking-ids
+        labels = [f"{tracker_id} {model.names[class_id]}" for class_id, tracker_id in zip(detections.class_id, detections.tracker_id)]
 
         # Add annotations to frame using supervision.
         annotated_image = bounding_box_annotator.annotate(scene=frame,
