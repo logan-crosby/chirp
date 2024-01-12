@@ -2,35 +2,70 @@
 feeder analysis pipeline. Uses input video feed from a file or video device and
 outputs to an RTMP server.
 """
+import argparse
+from pathlib import Path
 
 import numpy as np
 import cv2 as cv
 
-def usbcam_detect_track_stream():
+from ultralytics import YOLO
 
-    camera_index = 0 # TODO: Parameterize.
-    feeder_camera = cv.VideoCapture(camera_index)
+def main():
+
+    # Set up argparser.
+    parser = argparse.ArgumentParser(description="Chirp bird feeder live stream bird tracking")
+    parser.add_argument("-v", 
+                        "--video-source", 
+                        default="/dev/video0", 
+                        type=str,
+                        help="Path to video device (/dev/videoX) or video file.")
+    parser.add_argument("-w",
+                        "--yolo-weights",
+                        help="Filepath of the YOLOv8 detection model weights being used",
+                        type=str)
+    # Parse received arguments.
+    args = parser.parse_args()
+    video_source_path = Path(args.video_source)
+    if not video_source_path.exists():
+        raise FileNotFoundError(f"Failed to find video source at provided path: {video_source_path}")
+
+    model_weights_path = Path(args.yolo_weights)
+    if not model_weights_path.exists():
+        raise FileNotFoundError(f"YOLOv8 model weights not found at provided path: {model_weights_path}")
+
+    # Set camera parameters.
+    feeder_camera = cv.VideoCapture(str(video_source_path))
     if not feeder_camera.isOpened():
         print(f"Failed to open camera")
     else:
         print(f"Feeder camera framerate: {feeder_camera.get(cv.CAP_PROP_FPS)}")
+
+    # Load YOLO model weights.
+    model = YOLO(model=model_weights_path)
 
     while True:
         status, frame = feeder_camera.read()
 
         # If the frame could not be grabbed successfully, bail out.
         if not status:
-            print(f"Failed to retrieve frame from camera {camera_index}.")
+            print(f"Failed to retrieve frame from video {video_source_path}.")
             break
 
         # Grab frame attributes.
         frame_height, frame_width, _ = frame.shape
         preview_height = frame_height // 2
         preview_width = frame_width // 2
-    
+
+        # Run inference on the captured frame.
+        result = model(frame)
+
+        # Add annotations to frame using supervision.
+
         # If successfully retrieved, display the retrieved frame. Create a
         # duplicate frame resized for viewing output.
         preview_frame = cv.resize(src=frame, dsize=(preview_width, preview_height))
+
+        # Display the resized, annotated frame.
         cv.imshow(winname="Camera Frames", mat=preview_frame)
         if cv.waitKey(1) == ord('q'):
             break
@@ -41,4 +76,5 @@ def usbcam_detect_track_stream():
 
 if __name__ == "__main__":
 
-    usbcam_detect_track_stream()
+    main()
+    
