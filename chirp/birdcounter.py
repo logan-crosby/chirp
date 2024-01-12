@@ -58,6 +58,7 @@ def main():
     # Create a supervision bounding box annotator.
     bounding_box_annotator = sv.BoundingBoxAnnotator()
     label_annotator = sv.LabelAnnotator()
+    trace_annotator = sv.TraceAnnotator()
 
     while True:
         status, frame = feeder_camera.read()
@@ -83,12 +84,12 @@ def main():
         # by using any low confidence detections. But before NMS as well?
         detections = tracker.update_with_detections(detections=detections)
 
-        NMS_IOU_THRESHOLD = 0.5
-        filtered_detections = detections.with_nms(threshold=NMS_IOU_THRESHOLD)
-        # Filter out any remaining detections with confidence less than a
-        # specified threshold.
-        CONFIDENCE_THRESHOLD = 0.9
-        filtered_detections = filtered_detections[filtered_detections.confidence < CONFIDENCE_THRESHOLD]
+        # NMS_IOU_THRESHOLD = 0.5
+        # filtered_detections = detections.with_nms(threshold=NMS_IOU_THRESHOLD)
+        # # Filter out any remaining detections with confidence less than a
+        # # specified threshold.
+        # CONFIDENCE_THRESHOLD = 0.9
+        # filtered_detections = filtered_detections[filtered_detections.confidence < CONFIDENCE_THRESHOLD]
         
         # Create labels maintained by model.
         # https://supervision.roboflow.com/how_to/track_objects/#annotate-video-with-tracking-ids
@@ -100,6 +101,8 @@ def main():
         annotated_image = label_annotator.annotate(scene=annotated_image,
                                                    detections=detections,
                                                    labels=labels)
+        annotated_image = trace_annotator.annotate(scene=annotated_image,
+                                                   detections=detections)
 
         # If successfully retrieved, display the retrieved frame. Create a
         # duplicate frame resized for viewing output.
