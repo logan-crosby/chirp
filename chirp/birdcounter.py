@@ -71,9 +71,13 @@ def main():
         result = model(frame)[0] # Only want the results for the single frame passed in.
         # Convert the results from ultralytics format to supervision's format.
         detections = sv.Detections.from_ultralytics(ultralytics_results=result)
-        NMS_THRESHOLD = 0.5
-        filtered_detections = detections.with_nms(threshold=NMS_THRESHOLD)
-
+        NMS_IOU_THRESHOLD = 0.5
+        filtered_detections = detections.with_nms(threshold=NMS_IOU_THRESHOLD)
+        # Filter out any remaining detections with confidence less than a
+        # specified threshold.
+        CONFIDENCE_THRESHOLD = 0.9
+        filtered_detections = filtered_detections[filtered_detections.confidence < CONFIDENCE_THRESHOLD]
+        
         # Create labels maintained by model.
         # https://supervision.roboflow.com/how_to/detect_and_annotate/#annotate-image
         labels = [model.names[class_id] for class_id in detections.class_id]
