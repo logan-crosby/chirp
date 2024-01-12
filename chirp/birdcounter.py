@@ -4,6 +4,8 @@ outputs to an RTMP server.
 """
 import argparse
 from pathlib import Path
+import argparse
+from pathlib import Path
 
 import numpy as np
 import cv2 as cv
