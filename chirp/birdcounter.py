@@ -47,8 +47,21 @@ def main():
     else:
         video_framerate = feeder_camera.get(cv.CAP_PROP_FPS)
         print(f"Feeder camera framerate: {video_framerate}")
-       
 
+    # Define counting zone polygons.
+    # Define zone that covers the entire camera frame. Handles counting all
+    # tracked birds in view of the camera.
+    video_height = int(feeder_camera.get(cv.CAP_PROP_FRAME_HEIGHT))
+    video_width = int(feeder_camera.get(cv.CAP_PROP_FRAME_WIDTH))
+    print(f"Camera height/width: {video_height}, {video_width}")
+    full_zone_polygon = np.array([[0,0],
+                                 [video_width, 0],
+                                 [video_width, video_height],
+                                 [0, video_height]])
+    full_zone = sv.PolygonZone(polygon=full_zone_polygon,
+                               frame_resolution_wh=(video_width, video_height),
+                               triggering_position=sv.Position.CENTER)
+    
     # Load YOLO model weights.
     model = YOLO(model=model_weights_path)
 
@@ -59,6 +72,8 @@ def main():
     bounding_box_annotator = sv.BoundingBoxAnnotator()
     label_annotator = sv.LabelAnnotator()
     trace_annotator = sv.TraceAnnotator()
+    full_zone_annotator = sv.PolygonZoneAnnotator(zone=full_zone,
+                                                  color=sv.Color.green())
 
     while True:
         status, frame = feeder_camera.read()
@@ -83,6 +98,11 @@ def main():
         # detections from the detector. Something tells me ByteTrack does better
         # by using any low confidence detections. But before NMS as well?
         detections = tracker.update_with_detections(detections=detections)
+        
+        # Pass the tracked detections to any zones. The Zone objects will take
+        # those tracked detections and determine the number of instances
+        # currently in that zone.
+        full_zone.trigger(detections=detections)
 
         # NMS_IOU_THRESHOLD = 0.5
         # filtered_detections = detections.with_nms(threshold=NMS_IOU_THRESHOLD)
@@ -103,6 +123,9 @@ def main():
                                                    labels=labels)
         annotated_image = trace_annotator.annotate(scene=annotated_image,
                                                    detections=detections)
+        # Annotate image with zone.
+        annotated_image = full_zone_annotator.annotate(scene=annotated_image)
+        
 
         # If successfully retrieved, display the retrieved frame. Create a
         # duplicate frame resized for viewing output.
