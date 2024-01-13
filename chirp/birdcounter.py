@@ -92,6 +92,11 @@ def main():
     # which ones exited. Could also return that information in a mask style,
     # just like the detections that are in the zone. Not sure why they chose to
     # do it like this yet, but could definitely follow a similar trend.
+
+    # Although, actually, probably can't do it like that--because if an instance
+    # goes out of view, then that tracked detection in the dictionary won't be
+    # in the detection list that is passed in--so that approach doesn't quite
+    # line up or work for this.
     
     # Load YOLO model weights.
     model = YOLO(model=model_weights_path)
