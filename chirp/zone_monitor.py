@@ -34,7 +34,7 @@ class ZoneMonitor:
         self._monitored_detections = {}
 
     def update(self, 
-               detections_in_zone: sv.Detections) -> Tuple[sv.Detections, sv.Detections]:
+               detections_in_zone: sv.Detections) -> Tuple[List, List]:
 
         # Create list for detections that have been present in the video
         # sequence for at least in_threshold frames.
@@ -69,6 +69,8 @@ class ZoneMonitor:
                 }
 
         # 
+                
+        return entered_detections, exited_detections
 
         # not_found = self._monitored_detections[]
 
