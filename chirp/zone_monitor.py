@@ -51,13 +51,15 @@ class ZoneMonitor:
             tracker_id = detection[4]
 
             # If this tracked detection is already being monitored, then just
-            # increments its frames_since_added count.
+            # increments its frames_since_added count. Also refresh its out
+            # timeout counter.
             if tracker_id in list(self._monitored_detections.keys()):
                 if self._monitored_detections[tracker_id]["frames_present"] < self._in_threshold:
                     self._monitored_detections[tracker_id]["frames_present"] += 1
                     if self._monitored_detections[tracker_id]["frames_present"] == self._in_threshold:
                         entered_detections.append(detection)
                 self._monitored_detections[tracker_id]["last_detection"] = detection
+                self._monitored_detections[tracker_id]["out_timeout_counter"] = self._out_timeout
 
             # If not, this is a new detection. Add a new entry to the monitored
             # detections dictionary.
@@ -68,40 +70,14 @@ class ZoneMonitor:
                     "out_timeout_counter": self._out_timeout
                 }
 
-        # 
-                
+        # Remove any detections that haven't been present for out_timeout
+        # frames. Decrement out_timeout_counter for all other missing
+        # detections.
+        for tracker_id in list(self._monitored_detections.keys()):
+            if tracker_id not in detections_in_zone.tracker_id:
+                self._monitored_detections[tracker_id]["out_timeout_counter"] -= 1
+                if self._monitored_detections[tracker_id]["out_timeout_counter"] == 0:
+                    exited_detections.append(self._monitored_detections[tracker_id]["last_detection"])
+                    del(self._monitored_detections[tracker_id])
+        
         return entered_detections, exited_detections
-
-        # not_found = self._monitored_detections[]
-
-
-
-        # Rough idea:
-        # For each of the detections, check if it's TRACKER_ID is already in the
-        # tracked_detections dictionary.
-
-        # If it is, increment its frames_since_added counter. Maybe update with
-        # the ceil of the threshold so the numbers don't overflow.
-        
-        # If it's not already in there, create a new entry in the dictionary for
-        # it. The entry should map the tracker id to a new dictionary, whose
-        # values will be the detection vector, the frames_since_added_counter,
-        # and the out_timeout_counter.
-
-        
-        # Also, have to check for existing detections, if any of their
-        # out_timeout_counter values have reached 0, if their frames_since_added
-        # == in_threshold, then that entry can be removed from the dictionary
-        # and returned as an EXITED detection.
-
-        # If it's frames_since_added is not == in_threshold, then that detection
-        # wasn't around long enough to be considered present, and therefore
-        # shouldn't be returned as exited or counted.
-
-        # Also, have to check for existing detections, if their
-        # frames_since_added reaches the in_threshold, then those instances can
-        # be returned in the list of "entered detections" from this call to
-        # update.
-        
-
-        pass
