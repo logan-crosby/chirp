@@ -13,6 +13,8 @@ import cv2 as cv
 from ultralytics import YOLO
 import supervision as sv
 
+from zone_monitor import ZoneMonitor
+
 def main():
 
     # Set up argparser.
@@ -61,6 +63,9 @@ def main():
     full_zone = sv.PolygonZone(polygon=full_zone_polygon,
                                frame_resolution_wh=(video_width, video_height),
                                triggering_position=sv.Position.CENTER)
+    full_zone_monitor = ZoneMonitor(in_threshold=int(video_framerate) // 2,
+                                    out_timeout=int(video_framerate))
+    total_bird_count = 0
     
     # So, I need some sort of class that can maintain the detected+tracked
     # objects in a zone. 
@@ -127,7 +132,7 @@ def main():
         preview_width = frame_width // 2
 
         # Run inference on the captured frame.
-        result = model(frame)[0] # Only want the results for the single frame passed in.
+        result = model(frame, verbose=False)[0] # Only want the results for the single frame passed in.
         # Convert the results from ultralytics format to supervision's format.
         detections = sv.Detections.from_ultralytics(ultralytics_results=result)
         # Pass detections to tracker. The tracker will update the
@@ -142,7 +147,35 @@ def main():
         # currently in that zone.
         # TODO: Have to use the boolean (mask) list returned by this function to
         # determine which detections are in the zone and which are not.
-        full_zone.trigger(detections=detections)
+        zone_detections_mask = full_zone.trigger(detections=detections)
+        detections_in_zone = detections[zone_detections_mask]
+        entered_detections, exited_detections = full_zone_monitor.update(detections_in_zone=detections_in_zone)
+        total_bird_count += len(entered_detections)
+
+        # Temporary code here to print out which birds (and what type entered
+        # and exited in a given frame. This is just for debugging/human
+        # readability.
+        for detection in entered_detections:
+            print(f"A {model.names[detection[3]]} (Tracker ID {detection[4]}) arrived.")
+        for detection in entered_detections:
+            print(f"{model.names[detection[3]]} (Tracker ID {detection[4]}) headed out.")
+            # It would also be cool to print out the elapsed time, how long it
+            # stayed. Can add this if I have the timestamp in the returned
+            # detections as well. Not yet, but maybe a future feature. That's
+            # simple enough to compute externally in a spreadsheet, too.
+
+        # TODO: Add some temporary dictionary to track the number of each
+        # species and use that (again, temporarily) to annotate the stream with.
+
+        # TODO Set up a logger and log these human readable outputs to a
+        # file--or just use a simple file for now.
+        # TODO Set up logging the entered and exited detections to a CSV or
+        # excel workbook. OR going directly to google sheets.
+        # TODO: Could even take stats/metrics (as soon as they're computed
+        # externally) and report them with a YouTube chat bot. I.e., a bird
+        # shows up and then leaves. Leaving could trigger an event for the bot
+        # to report "Black capped chickadee (ID 3021) just headed out :wave".
+
 
         # TODO: Rough idea:
         # For the detections that are within the zone: maintain a dictionary of
@@ -221,8 +254,15 @@ def main():
         annotated_image = trace_annotator.annotate(scene=annotated_image,
                                                    detections=detections)
         # Annotate image with zone.
-        annotated_image = full_zone_annotator.annotate(scene=annotated_image)
-        
+        # annotated_image = full_zone_annotator.annotate(scene=annotated_image,
+        #                                                label="")
+        # Annotate image with total bird count.
+        annotated_image = sv.draw_text(scene=annotated_image, 
+                                       text=f"Birds Seen Today: {total_bird_count}", 
+                                       text_anchor=sv.Point(x=200, y=40),
+                                       text_color=sv.Color.green(),
+                                       text_scale=1.0,
+                                       text_thickness=2)
 
         # If successfully retrieved, display the retrieved frame. Create a
         # duplicate frame resized for viewing output.
@@ -237,7 +277,7 @@ def main():
     feeder_camera.release()
     cv.destroyAllWindows()
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
 
     main()
     
