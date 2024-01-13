@@ -93,7 +93,8 @@ class ZoneMonitor:
             if tracker_id not in detections_in_zone.tracker_id:
                 self._monitored_detections[tracker_id]["out_timeout_counter"] -= 1
                 if self._monitored_detections[tracker_id]["out_timeout_counter"] == 0:
-                    exited_detections.append(self._monitored_detections[tracker_id]["last_detection"])
+                    if self._monitored_detections[tracker_id]["frames_present"] == self._in_threshold:
+                        exited_detections.append(self._monitored_detections[tracker_id]["last_detection"])
                     del(self._monitored_detections[tracker_id])
         
         return entered_detections, exited_detections

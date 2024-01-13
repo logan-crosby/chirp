@@ -63,8 +63,9 @@ def main():
     full_zone = sv.PolygonZone(polygon=full_zone_polygon,
                                frame_resolution_wh=(video_width, video_height),
                                triggering_position=sv.Position.CENTER)
+    TRACK_BUFFER_S = 8
     full_zone_monitor = ZoneMonitor(in_threshold=int(video_framerate) // 2,
-                                    out_timeout=int(video_framerate))
+                                    out_timeout=int(video_framerate)*TRACK_BUFFER_S)
     total_bird_count = 0
     
     # So, I need some sort of class that can maintain the detected+tracked
@@ -107,7 +108,6 @@ def main():
     model = YOLO(model=model_weights_path)
 
     # Initilize a ByteTrack tracker.
-    TRACK_BUFFER_S = 8
     tracker = sv.ByteTrack(frame_rate=video_framerate,
                            track_buffer=video_framerate*TRACK_BUFFER_S)
 
@@ -157,7 +157,7 @@ def main():
         # readability.
         for detection in entered_detections:
             print(f"A {model.names[detection[3]]} (Tracker ID {detection[4]}) arrived.")
-        for detection in entered_detections:
+        for detection in exited_detections:
             print(f"{model.names[detection[3]]} (Tracker ID {detection[4]}) headed out.")
             # It would also be cool to print out the elapsed time, how long it
             # stayed. Can add this if I have the timestamp in the returned
@@ -175,6 +175,8 @@ def main():
         # externally) and report them with a YouTube chat bot. I.e., a bird
         # shows up and then leaves. Leaving could trigger an event for the bot
         # to report "Black capped chickadee (ID 3021) just headed out :wave".
+        # TODO: Reply to supervision thread to see if this is something that
+        # they'd want to add to the PolygonZone class.
 
 
         # TODO: Rough idea:
