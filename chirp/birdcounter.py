@@ -62,6 +62,37 @@ def main():
                                frame_resolution_wh=(video_width, video_height),
                                triggering_position=sv.Position.CENTER)
     
+    # So, I need some sort of class that can maintain the detected+tracked
+    # objects in a zone. 
+    
+    # But, I also have to ask: What should the behavior be when the class
+    # receives new detections and finds that a new instance can be considered
+    # "present"--and similarly, when an instance can be considered "lost" or
+    # gone. Maybe when you call "trigger" on this function, it could return a
+    # list of detection (vectors) for both "entered" and "exited" detections.
+
+    # Then, what you do with those entered and exited detections is up to you.
+    # I.e., you can write them to a csv file, send them off to some REST API,
+    # add to them to a list or something--whatever you want. I.e., accumulating
+    # all the detection vectors that have entered/exited a zone should not be
+    # the responsibility of this class--but instead a separate, additional
+    # class or mechanism--completely unrelated. Like a VideoWriter for
+    # supervision, you could have something similar to store/maintain records of
+    # detections, like you'd store video frames.
+
+    # At most, I think the class should just track maybe the quantity of entered
+    # and exited elements--but that's really just for convenience if you don't
+    # want to add anything on top of the base class.
+
+    # This type of tracking could be done within the trigger function of the
+    # polygon zone itself--I think that would be the most
+    # straightforward/convenient. Each time you call trigger, it could still
+    # return the boolean array describing which detections are and are not in
+    # the zone--but it could simultaneously return which detections entered and
+    # which ones exited. Could also return that information in a mask style,
+    # just like the detections that are in the zone. Not sure why they chose to
+    # do it like this yet, but could definitely follow a similar trend.
+    
     # Load YOLO model weights.
     model = YOLO(model=model_weights_path)
 
