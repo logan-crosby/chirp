@@ -35,10 +35,13 @@ class ZoneMonitor:
 
     def update(self, 
                detections_in_zone: sv.Detections) -> Tuple[sv.Detections, sv.Detections]:
-        
-        # for detection in detections_in_zone:
-        for tracker_id in self._monitored_detections:
-            pass
+
+        # Create list for detections that have been present in the video
+        # sequence for at least in_threshold frames.
+        entered_detections = []
+        # Create list for detections that have not been present for at least
+        # out_timeout frames.
+        exited_detections = []
         
         # Add any new detections to the monitored list. Increment the number of
         # frames present for detections already in the monitored list.
@@ -50,9 +53,14 @@ class ZoneMonitor:
             # If this tracked detection is already being monitored, then just
             # increments its frames_since_added count.
             if tracker_id in list(self._monitored_detections.keys()):
-                self._monitored_detections[tracker_id]["frames_present"] = np.clip(self._monitored_detections[tracker_id]["frames_present"] + 1, 0, self._in_threshold)
+                if self._monitored_detections[tracker_id]["frames_present"] < self._in_threshold:
+                    self._monitored_detections[tracker_id]["frames_present"] += 1
+                    if self._monitored_detections[tracker_id]["frames_present"] == self._in_threshold:
+                        entered_detections.append(detection)
                 self._monitored_detections[tracker_id]["last_detection"] = detection
-            # If not, this is a new detection. Add a new entry
+
+            # If not, this is a new detection. Add a new entry to the monitored
+            # detections dictionary.
             else:
                 self._monitored_detections[tracker_id] = {
                     "last_detection": detection,
@@ -60,7 +68,7 @@ class ZoneMonitor:
                     "out_timeout_counter": self._out_timeout
                 }
 
-        
+        # 
 
         # not_found = self._monitored_detections[]
 
