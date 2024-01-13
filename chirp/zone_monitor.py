@@ -1,6 +1,8 @@
 
 from typing import List, Optional, Tuple
 
+import numpy as np
+
 import supervision as sv
 
 
@@ -27,10 +29,43 @@ class ZoneMonitor:
         self._out_timeout = out_timeout
         # Create dictionary for monitored detections. Maps a detection's
         # tracker_id to the number of times it has been seen and its timeout.
+        # TODO: There should be an additional class made specifically just for
+        # handling this dictionary and its entries.
         self._monitored_detections = {}
 
-    def update(detections_in_zone: sv.Detections) -> Tuple[sv.Detections, sv.Detections]:
+    def update(self, 
+               detections_in_zone: sv.Detections) -> Tuple[sv.Detections, sv.Detections]:
         
+        # for detection in detections_in_zone:
+        for tracker_id in self._monitored_detections:
+            pass
+        
+        # Add any new detections to the monitored list. Increment the number of
+        # frames present for detections already in the monitored list.
+        for detection in list(detections_in_zone):
+            # Accessing elements of each detection according to
+            # https://supervision.roboflow.com/detection/core/#detections
+            tracker_id = detection[4]
+
+            # If this tracked detection is already being monitored, then just
+            # increments its frames_since_added count.
+            if tracker_id in list(self._monitored_detections.keys()):
+                self._monitored_detections[tracker_id]["frames_present"] = np.clip(self._monitored_detections[tracker_id]["frames_present"] + 1, 0, self._in_threshold)
+                self._monitored_detections[tracker_id]["last_detection"] = detection
+            # If not, this is a new detection. Add a new entry
+            else:
+                self._monitored_detections[tracker_id] = {
+                    "last_detection": detection,
+                    "frames_present": 1,
+                    "out_timeout_counter": self._out_timeout
+                }
+
+        
+
+        # not_found = self._monitored_detections[]
+
+
+
         # Rough idea:
         # For each of the detections, check if it's TRACKER_ID is already in the
         # tracked_detections dictionary.
