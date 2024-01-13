@@ -66,7 +66,9 @@ def main():
     model = YOLO(model=model_weights_path)
 
     # Initilize a ByteTrack tracker.
-    tracker = sv.ByteTrack(frame_rate=video_framerate)
+    TRACK_BUFFER_S = 8
+    tracker = sv.ByteTrack(frame_rate=video_framerate,
+                           track_buffer=video_framerate*TRACK_BUFFER_S)
 
     # Create a supervision bounding box annotator.
     bounding_box_annotator = sv.BoundingBoxAnnotator()
@@ -122,6 +124,47 @@ def main():
         # function of the detection model being used. Need to look into the
         # tracker's parameters.
 
+        # NOTE: Does a separate "in-count" and "out-count" make sense for the
+        # zone? I.e., I feel like I only care about "how many objects were in
+        # this zone cumulatively?" Maybe that's the same thing as saying "How
+        # many objects entered this zone," where enter could mean "appeared" or
+        # came in from outside of the zone. In theory, though, the number of
+        # instances that enter a zone should also exit a zone (whether exit
+        # means "disappear suddenly" or move from the zone to a region still in
+        # view but no longer in the zone). I feel like those would always be the
+        # same?
+        
+        # UNLESS you are in fact interested in knowing how many objects entered
+        # a zone in a certain time range. Granted, you should just be able to
+        # determine this from the change in count.
+        # BUT, what if you want to know how many instances LEFT/exited a
+        # particular zone during a certain time range. Well, in that case,
+        # yes--you could increment a "out-count" that rises as elements leave.
+        
+        # BUT if you're really interested in that, you could also just
+        # plot/store the number of instances in the zone at each unit time, and
+        # then figure out how many left in that time range later. I suppose you
+        # could say the same about how many were in the zone in total /
+        # cumulatively--I.e., it's something that you could extract from
+        # recorded data later on / after the fact.
+
+        # ALSO: On a slightly different note--I think there also needs to be
+        # some kind of threshold number of frames that a tracker_id must be
+        # present for before we can count it as a present object. I.e., if a
+        # cardinal shows up, but is mistakenly classified as a male housefinch
+        # for two frames, I don't want that housefinch getting counted--as its
+        # not really there, and was only detected as that for two frames.
+        # Rather, I only want to count an instance of a class if it has been
+        # tracked for >= some number of frames.
+
+        # So maybe, when a new tracker_id is added to the dict, we have a couple
+        # of data points/counters associated with it:
+        # 1. Timestamp / time arrived?
+        # 2. Number of frames appeared in (that tracker_id is present in)
+        # 3. Timeout frames == refreshed/set to TIMEOUT each time the tracker_id
+        #    is present.
+        # 
+
         # NMS_IOU_THRESHOLD = 0.5
         # filtered_detections = detections.with_nms(threshold=NMS_IOU_THRESHOLD)
         # # Filter out any remaining detections with confidence less than a
@@ -158,7 +201,7 @@ def main():
     feeder_camera.release()
     cv.destroyAllWindows()
 
-if __name__ == "__main__":
+if __name__ == "__main__": 
 
     main()
     
