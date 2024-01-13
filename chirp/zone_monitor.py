@@ -1,12 +1,14 @@
+"""Contains ZoneMonitor implementation. This class is meant to serve as a helper
+class to be used alongside a Supervision PolygonZone for counting the number of
+objects that enter and exit a zone.
+"""
 
 from typing import List, Optional, Tuple
 
-import numpy as np
-
 import supervision as sv
 
-
 class ZoneMonitor:
+    """Class to keep track of the detections that enter and exit a zone."""
 
     def __init__(self,
                  in_threshold: Optional[int] = 15,
