@@ -102,7 +102,25 @@ def main():
         # Pass the tracked detections to any zones. The Zone objects will take
         # those tracked detections and determine the number of instances
         # currently in that zone.
+        # TODO: Have to use the boolean (mask) list returned by this function to
+        # determine which detections are in the zone and which are not.
         full_zone.trigger(detections=detections)
+
+        # TODO: Rough idea:
+        # For the detections that are within the zone: maintain a dictionary of
+        # detections within the zone and their tracker_id. Maybe use a counter.
+        # Basically, increment a count for each element for each frame that they
+        # are present.
+        # OR, set a timeout number of frames for each tracker_id. Each frame
+        # that a tracker_id is present, just set the number to whatever the
+        # timeout is. If a tracker_id is in the dictionary and is not present in
+        # the current frame, then decrement its timeout counter by one. If the
+        # timeout counter goes to zero, then remove that tracked instance from
+        # the dictionary. Make sure that timeout matches the tracker's timeout
+        # if you to avoid some duplicate counting. Ideally, the tracker doesn't
+        # lose the object and maintains a track on it--but I think that's also a
+        # function of the detection model being used. Need to look into the
+        # tracker's parameters.
 
         # NMS_IOU_THRESHOLD = 0.5
         # filtered_detections = detections.with_nms(threshold=NMS_IOU_THRESHOLD)
