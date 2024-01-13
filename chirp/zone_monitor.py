@@ -35,6 +35,20 @@ class ZoneMonitor:
 
     def update(self, 
                detections_in_zone: sv.Detections) -> Tuple[List, List]:
+        """Takes the detections from a zone and figures out which tracked
+        detections have newly entered the zone and those that have exited the
+        zone since the last call to update.
+
+        Args:
+            detections_in_zone (sv.Detections): Supervision Detections instance
+            containing the detections from a zone.
+
+        Returns:
+            Tuple[List, List]: Returns a list of detection vectors that have
+            recently entered the zone (been present for at least in_threshold
+            frames) and the list of detection vectors that haven't been seen in
+            out_timeout frames.
+        """
 
         # Create list for detections that have been present in the video
         # sequence for at least in_threshold frames.
