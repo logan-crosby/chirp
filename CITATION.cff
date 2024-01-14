@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Litzinger"
+  given-names: "Nathan"
+title: "chirp"
+version: 0.1.0
+date-released: 2024-01-13
+url: "https://github.com/nlitz88/chirp"
