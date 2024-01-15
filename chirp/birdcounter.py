@@ -77,7 +77,7 @@ def main():
                            track_buffer=video_framerate*TRACK_BUFFER_S)
 
     # Create a supervision bounding box annotator.
-    bounding_box_annotator = sv.BoundingBoxAnnotator()
+    bounding_box_annotator = sv.CircleAnnotator()
     label_annotator = sv.LabelAnnotator()
     trace_annotator = sv.TraceAnnotator()
     full_zone_annotator = sv.PolygonZoneAnnotator(zone=full_zone,
