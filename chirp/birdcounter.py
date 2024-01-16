@@ -29,6 +29,11 @@ def main():
                         "--yolo-weights",
                         help="Filepath of the YOLOv8 detection model weights being used",
                         type=str)
+    parser.add_argument("-o",
+                        "--output-directory",
+                        default=None,
+                        help="Directory where any output files will be created.",
+                        type=str)
     # Parse received arguments.
     args = parser.parse_args()
     video_source_path = Path(args.video_source)
@@ -37,11 +42,39 @@ def main():
     model_weights_path = Path(args.yolo_weights)
     if not model_weights_path.exists():
         raise FileNotFoundError(f"YOLOv8 model weights not found at provided path: {model_weights_path}")
+    output_directory_path = Path(args.output_directory)
+    if not output_directory_path.exists():
+        raise FileNotFoundError(f"Provided directory {output_directory_path} does not exist or cannot be accessed.")
 
     # TODO: Create a "BirdCounter" class of some sort where, given the parsed
     # arguments from whatever interface you're using above (like a CLI), you
     # instantiate a new BirdCounter instance and then run the stream as a method
     # of that class.
+
+    # Create a new output directory for session file storage if it doesn't
+    # already exist.
+    # TODO: This should (eventually) run in the constructor of the BirdCounter
+    # class.
+    sessions_directory = output_directory_path/"chirp_sessions"
+    if not sessions_directory.exists():
+        try:
+            sessions_directory.mkdir()
+            print(f"Successfully reated new directory for session file storage: {sessions_directory}")
+        except Exception as exc:
+            print(f"Failed to create session file directory in {output_directory_path}")
+            raise(exc)
+        
+    
+    # Create a directory for the newly started session.
+    # TODO: This should be run only once the BirdCounter's "run" function (or
+    # similar) has been invoked.
+    current_session_directory = sessions_directory/f"chirp_session_{datetime.now()}"
+    try:
+        current_session_directory.mkdir()
+        print(f"Successfully created directory for new session: {current_session_directory}")
+    except Exception as exc:
+        print(f"Failed to create directory for new session.")
+        raise(exc)
 
     # Set camera parameters.
     feeder_camera = cv.VideoCapture(str(video_source_path))
