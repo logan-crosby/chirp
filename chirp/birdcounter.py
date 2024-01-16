@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 import argparse
 from pathlib import Path
+from csv import DictWriter
 
 import numpy as np
 import cv2 as cv
@@ -68,13 +69,22 @@ def main():
     # Create a directory for the newly started session.
     # TODO: This should be run only once the BirdCounter's "run" function (or
     # similar) has been invoked.
-    current_session_directory = sessions_directory/f"chirp_session_{datetime.now()}"
+    session_datetime = datetime.now()
+    current_session_directory = sessions_directory/f"chirp_session_{session_datetime}"
     try:
         current_session_directory.mkdir()
         print(f"Successfully created directory for new session: {current_session_directory}")
     except Exception as exc:
         print(f"Failed to create directory for new session.")
         raise(exc)
+    
+    # Open/create new events csv file for current session.
+    session_events_filepath = current_session_directory/f"{session_datetime}_session_events.csv"
+    session_events_file = open(file=session_events_filepath, mode='w', newline='')
+    # Create new dictwriter and initialize the header in the file.
+    fieldnames = ["datetime", "seconds", "nanoseconds", "zone_id", "class_id", "event_type"]
+    writer = DictWriter(session_events_file, fieldnames=fieldnames)
+    writer.writeheader()
 
     # Set camera parameters.
     feeder_camera = cv.VideoCapture(str(video_source_path))
