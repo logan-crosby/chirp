@@ -203,6 +203,7 @@ def main():
                       "tracker_id": exited_event["last_detection"][4],
                       "event_type_id": 1
                     }
+            session_writer.writerow(rowdict=event)
             print(f"{frame_datetime} - {model.names[exited_event['last_detection'][3]]} (Tracker ID {exited_event['last_detection'][4]}) headed out.")
         
         # for detection in exited_detections:
