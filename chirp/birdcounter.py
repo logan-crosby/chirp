@@ -3,7 +3,7 @@ feeder analysis pipeline. Uses input video feed from a file or video device and
 outputs to an RTMP server.
 """
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import argparse
 from pathlib import Path
@@ -69,7 +69,7 @@ def main():
     # Create a directory for the newly started session.
     # TODO: This should be run only once the BirdCounter's "run" function (or
     # similar) has been invoked.
-    session_datetime = datetime.now()
+    session_datetime = datetime.now(tz=timezone.utc)
     current_session_directory = sessions_directory/f"chirp_session_{session_datetime}"
     try:
         current_session_directory.mkdir()
@@ -323,9 +323,11 @@ def main():
         if cv.waitKey(1) == ord('q'):
             break
 
-    # Before leaving, release the capture device (I.e., close).
+    # Before leaving, release the capture device (I.e., close) and close any
+    # open files.
     feeder_camera.release()
     cv.destroyAllWindows()
+    session_events_file.close()
 
 if __name__ == "__main__":
 
