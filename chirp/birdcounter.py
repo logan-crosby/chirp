@@ -82,7 +82,7 @@ def main():
     session_events_filepath = current_session_directory/f"{session_datetime}_session_events.csv"
     session_events_file = open(file=session_events_filepath, mode='w', newline='')
     # Create new dictwriter and initialize the header in the file.
-    fieldnames = ["datetime", "seconds", "nanoseconds", "zone_id", "class_id", "event_type"]
+    fieldnames = ["datetime", "frame", "zone_id", "class_id", "tracker_id", "event_type_id"]
     session_writer = DictWriter(session_events_file, fieldnames=fieldnames)
     session_writer.writeheader()
 
@@ -190,7 +190,7 @@ def main():
                       "zone_id": 0,
                       "class_id": entrance_event["last_detection"][3],
                       "tracker_id": entrance_event["last_detection"][4],
-                      "event_type": 0
+                      "event_type_id": 0
                     }
             session_writer.writerow(rowdict=event)
             print(f"{datetime.now()} - A {model.names[entrance_event['last_detection'][3]]} (Tracker ID {entrance_event['last_detection'][4]}) arrived.")
@@ -201,7 +201,7 @@ def main():
                       "zone_id": 0,
                       "class_id": exited_event["last_detection"][3],
                       "tracker_id": exited_event["last_detection"][4],
-                      "event_type": 1
+                      "event_type_id": 1
                     }
             print(f"{datetime.now()} - {model.names[exited_event['last_detection'][3]]} (Tracker ID {exited_event['last_detection'][4]}) headed out.")
         
