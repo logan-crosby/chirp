@@ -125,7 +125,7 @@ def main():
     TRACK_BUFFER_S = 8
     full_zone_monitor = ZoneMonitor(in_threshold=int(video_framerate) // 2,
                                     out_timeout=int(video_framerate)*TRACK_BUFFER_S)
-    total_bird_count = 0
+    bird_visit_count = 0
     
     # TODO: The zones themselves should be defined externally in a YAML file or
     # something--and these mappings should be generated automatically. For now,
@@ -206,7 +206,7 @@ def main():
         entered_events, exited_events = full_zone_monitor.update(detections_in_zone=detections_in_zone,
                                                                  frame_index=frame_counter,
                                                                  frame_datetime=frame_datetime)
-        total_bird_count += len(entered_events)
+        bird_visit_count += len(entered_events)
 
         # Log the events from the "full_zone" to file. 
         # TODO: Encapsulate this behavior so that it can be extended to any
@@ -336,7 +336,7 @@ def main():
         #                                                label="")
         # Annotate image with total bird count.
         annotated_image = sv.draw_text(scene=annotated_image, 
-                                       text=f"Birds Seen Today: {total_bird_count}", 
+                                       text=f"Bird Visits Today: {bird_visit_count}",
                                        text_anchor=sv.Point(x=200, y=40),
                                        text_color=sv.Color.green(),
                                        text_scale=1.0,
