@@ -8,6 +8,7 @@ from pathlib import Path
 import argparse
 from pathlib import Path
 from csv import DictWriter
+import json
 
 import numpy as np
 import cv2 as cv
@@ -35,6 +36,11 @@ def main():
                         default=None,
                         help="Directory where any output files will be created.",
                         type=str)
+    parser.add_argument("-l",
+                        "--location",
+                        default=None,
+                        help="Latitude,Longitude for your feeder's approximate location.",
+                        type=str)
     # Parse received arguments.
     args = parser.parse_args()
     video_source_path = Path(args.video_source)
@@ -46,6 +52,9 @@ def main():
     output_directory_path = Path(args.output_directory)
     if not output_directory_path.exists():
         raise FileNotFoundError(f"Provided directory {output_directory_path} does not exist or cannot be accessed.")
+    location = args.location
+    if location == None:
+        raise Exception(f"No location provided!")
 
     # TODO: Create a "BirdCounter" class of some sort where, given the parsed
     # arguments from whatever interface you're using above (like a CLI), you
@@ -86,15 +95,11 @@ def main():
     session_writer = DictWriter(session_events_file, fieldnames=fieldnames)
     session_writer.writeheader()
 
-    # TODO: Create file containing the class_id to string name mapping used
-    # during this session. This is really a property of the model currently
-    # being used, but in case the model changes, there's a record of this
-    # mapping so the logged events don't become useless.
-    # TODO: Also include the mapping from zone_id to zone name in this file.
-    # Consider naming this file like "session_mappings.json" or something like
-    # that. Can essentially just write those mapping dictionaries directly to
-    # file as JSON (json.dumps(mapping_dict)).
-
+    # Create event type mappings.
+    EVENT_TYPE_MAPPINGS = {
+        0: "enter",
+        1: "exit"
+    }
 
     # Set camera parameters.
     feeder_camera = cv.VideoCapture(str(video_source_path))
@@ -122,8 +127,18 @@ def main():
                                     out_timeout=int(video_framerate)*TRACK_BUFFER_S)
     total_bird_count = 0
     
+    # TODO: The zones themselves should be defined externally in a YAML file or
+    # something--and these mappings should be generated automatically. For now,
+    # hardcode them here.
+    ZONE_MAPPINGS = {
+        0: "full_zone"
+    }
+    
     # Load YOLO model weights.
     model = YOLO(model=model_weights_path)
+
+    # Create class mappings
+    CLASS_MAPPINGS = {class_id: str(model.names[class_id]) for class_id in range(len(model.names))}
 
     # Initilize a ByteTrack tracker.
     tracker = sv.ByteTrack(frame_rate=video_framerate,
@@ -135,6 +150,18 @@ def main():
     trace_annotator = sv.TraceAnnotator()
     full_zone_annotator = sv.PolygonZoneAnnotator(zone=full_zone,
                                                   color=sv.Color.green())
+    
+    # Before beginning inference, create a session metadata JSON file.
+    session_metadata_filepath = current_session_directory/"session_metadata.json"
+    with open(file=session_metadata_filepath, mode='w') as session_metadata_file:
+        session_metadata = {
+            "event_type_mappings": EVENT_TYPE_MAPPINGS,
+            "zone_mappings": ZONE_MAPPINGS,
+            "class_mappings": CLASS_MAPPINGS,
+            "session_datetime": str(session_datetime),
+            "session_location": location
+        }
+        json.dump(obj=session_metadata, fp=session_metadata_file, indent=2)
     
     # Create a counter to maintain each frame's index.
     frame_counter = 0
