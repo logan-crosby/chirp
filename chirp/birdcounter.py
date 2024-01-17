@@ -193,7 +193,7 @@ def main():
                       "event_type_id": 0
                     }
             session_writer.writerow(rowdict=event)
-            print(f"{datetime.now()} - A {model.names[entrance_event['last_detection'][3]]} (Tracker ID {entrance_event['last_detection'][4]}) arrived.")
+            print(f"{frame_datetime} - A {model.names[entrance_event['last_detection'][3]]} (Tracker ID {entrance_event['last_detection'][4]}) arrived.")
         
         for exited_event in exited_events:
             event = {"datetime": exited_event["datetime_exited"],
@@ -203,7 +203,7 @@ def main():
                       "tracker_id": exited_event["last_detection"][4],
                       "event_type_id": 1
                     }
-            print(f"{datetime.now()} - {model.names[exited_event['last_detection'][3]]} (Tracker ID {exited_event['last_detection'][4]}) headed out.")
+            print(f"{frame_datetime} - {model.names[exited_event['last_detection'][3]]} (Tracker ID {exited_event['last_detection'][4]}) headed out.")
         
         # for detection in exited_detections:
         #     print(f"{datetime.now()} - {model.names[detection[3]]} (Tracker ID {detection[4]}) headed out.")
