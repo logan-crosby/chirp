@@ -151,7 +151,7 @@ def main():
         
         # Increment the frame counter.
         frame_counter += 1
-        frame_datetime = datetime.now()
+        frame_datetime = datetime.now(tz=timezone.utc)
 
         # Grab frame attributes.
         frame_height, frame_width, _ = frame.shape
