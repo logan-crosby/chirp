@@ -3,6 +3,7 @@ class to be used alongside a Supervision PolygonZone for counting the number of
 objects that enter and exit a zone.
 """
 
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 import supervision as sv
@@ -36,7 +37,9 @@ class ZoneMonitor:
         self._monitored_detections = {}
 
     def update(self, 
-               detections_in_zone: sv.Detections) -> Tuple[List, List]:
+               detections_in_zone: sv.Detections,
+               frame_index: int,
+               frame_datetime: datetime) -> Tuple[List, List]:
         """Takes the detections from a zone and figures out which tracked
         detections have newly entered the zone and those that have exited the
         zone since the last call to update.
@@ -44,6 +47,10 @@ class ZoneMonitor:
         Args:
             detections_in_zone (sv.Detections): Supervision Detections instance
             containing the detections from a zone.
+            frame_index (int): The offset / number of frames since the
+            beginning of the stream. I.e., the frame index / number.
+            frame_datetime (datetime): The datetime the image the detections are
+            from was captured. I.e., the output of datetime.now() upstream.
 
         Returns:
             Tuple[List, List]: Returns a list of detection vectors that have
@@ -73,7 +80,7 @@ class ZoneMonitor:
                 if self._monitored_detections[tracker_id]["frames_present"] < self._in_threshold:
                     self._monitored_detections[tracker_id]["frames_present"] += 1
                     if self._monitored_detections[tracker_id]["frames_present"] == self._in_threshold:
-                        entered_detections.append(detection)
+                        entered_detections.append(self._monitored_detections[tracker_id])
                 self._monitored_detections[tracker_id]["last_detection"] = detection
                 self._monitored_detections[tracker_id]["out_timeout_counter"] = self._out_timeout
 
@@ -83,18 +90,26 @@ class ZoneMonitor:
                 self._monitored_detections[tracker_id] = {
                     "last_detection": detection,
                     "frames_present": 1,
-                    "out_timeout_counter": self._out_timeout
+                    "out_timeout_counter": self._out_timeout,
+                    "frame_entered": frame_index,
+                    "datetime_entered": frame_datetime,
+                    "frame_exited": -1, # Indicates detection hasn't exited.
+                    "datetime_exited": -1
                 }
 
         # Remove any detections that haven't been present for out_timeout
         # frames. Decrement out_timeout_counter for all other missing
-        # detections.
+        # detections. Also, if it's the first frame that a detection isn't
+        # present, set this frame as the "exited" frame.
         for tracker_id in list(self._monitored_detections.keys()):
             if tracker_id not in detections_in_zone.tracker_id:
+                if self._monitored_detections[tracker_id]["out_timeout_counter"] == self._out_timeout:
+                    self._monitored_detections[tracker_id]["frame_exited"] = frame_index
+                    self._monitored_detections[tracker_id]["datetime_exited"] = frame_datetime
                 self._monitored_detections[tracker_id]["out_timeout_counter"] -= 1
                 if self._monitored_detections[tracker_id]["out_timeout_counter"] == 0:
                     if self._monitored_detections[tracker_id]["frames_present"] == self._in_threshold:
-                        exited_detections.append(self._monitored_detections[tracker_id]["last_detection"])
+                        exited_detections.append(self._monitored_detections[tracker_id])
                     del(self._monitored_detections[tracker_id])
         
         return entered_detections, exited_detections

@@ -83,8 +83,18 @@ def main():
     session_events_file = open(file=session_events_filepath, mode='w', newline='')
     # Create new dictwriter and initialize the header in the file.
     fieldnames = ["datetime", "seconds", "nanoseconds", "zone_id", "class_id", "event_type"]
-    writer = DictWriter(session_events_file, fieldnames=fieldnames)
-    writer.writeheader()
+    session_writer = DictWriter(session_events_file, fieldnames=fieldnames)
+    session_writer.writeheader()
+
+    # TODO: Create file containing the class_id to string name mapping used
+    # during this session. This is really a property of the model currently
+    # being used, but in case the model changes, there's a record of this
+    # mapping so the logged events don't become useless.
+    # TODO: Also include the mapping from zone_id to zone name in this file.
+    # Consider naming this file like "session_mappings.json" or something like
+    # that. Can essentially just write those mapping dictionaries directly to
+    # file as JSON (json.dumps(mapping_dict)).
+
 
     # Set camera parameters.
     feeder_camera = cv.VideoCapture(str(video_source_path))
@@ -125,14 +135,23 @@ def main():
     trace_annotator = sv.TraceAnnotator()
     full_zone_annotator = sv.PolygonZoneAnnotator(zone=full_zone,
                                                   color=sv.Color.green())
+    
+    # Create a counter to maintain each frame's index.
+    frame_counter = 0
 
     while True:
+        
+        # Grab frame from camera.
         status, frame = feeder_camera.read()
 
         # If the frame could not be grabbed successfully, bail out.
         if not status:
             print(f"Failed to retrieve frame from video {video_source_path}.")
             break
+        
+        # Increment the frame counter.
+        frame_counter += 1
+        frame_datetime = datetime.now()
 
         # Grab frame attributes.
         frame_height, frame_width, _ = frame.shape
@@ -157,20 +176,41 @@ def main():
         # determine which detections are in the zone and which are not.
         zone_detections_mask = full_zone.trigger(detections=detections)
         detections_in_zone = detections[zone_detections_mask]
-        entered_detections, exited_detections = full_zone_monitor.update(detections_in_zone=detections_in_zone)
-        total_bird_count += len(entered_detections)
+        entered_events, exited_events = full_zone_monitor.update(detections_in_zone=detections_in_zone,
+                                                                 frame_index=frame_counter,
+                                                                 frame_datetime=frame_datetime)
+        total_bird_count += len(entered_events)
 
-        # Temporary code here to print out which birds (and what type entered
-        # and exited in a given frame. This is just for debugging/human
-        # readability.
-        for detection in entered_detections:
-            print(f"{datetime.now()} - A {model.names[detection[3]]} (Tracker ID {detection[4]}) arrived.")
-        for detection in exited_detections:
-            print(f"{datetime.now()} - {model.names[detection[3]]} (Tracker ID {detection[4]}) headed out.")
-            # It would also be cool to print out the elapsed time, how long it
-            # stayed. Can add this if I have the timestamp in the returned
-            # detections as well. Not yet, but maybe a future feature. That's
-            # simple enough to compute externally in a spreadsheet, too.
+        # Log the events from the "full_zone" to file. 
+        # TODO: Encapsulate this behavior so that it can be extended to any
+        # zone. Consider including it in the zone monitor itself.
+        for entrance_event in entered_events:
+            event = {"datetime": entrance_event["datetime_entered"],
+                      "frame": entrance_event["frame_entered"],
+                      "zone_id": 0,
+                      "class_id": entrance_event["last_detection"][3],
+                      "tracker_id": entrance_event["last_detection"][4],
+                      "event_type": 0
+                    }
+            session_writer.writerow(rowdict=event)
+            print(f"{datetime.now()} - A {model.names[entrance_event['last_detection'][3]]} (Tracker ID {entrance_event['last_detection'][4]}) arrived.")
+        
+        for exited_event in exited_events:
+            event = {"datetime": exited_event["datetime_exited"],
+                      "frame": exited_event["frame_exited"],
+                      "zone_id": 0,
+                      "class_id": exited_event["last_detection"][3],
+                      "tracker_id": exited_event["last_detection"][4],
+                      "event_type": 1
+                    }
+            print(f"{datetime.now()} - {model.names[exited_event['last_detection'][3]]} (Tracker ID {exited_event['last_detection'][4]}) headed out.")
+        
+        # for detection in exited_detections:
+        #     print(f"{datetime.now()} - {model.names[detection[3]]} (Tracker ID {detection[4]}) headed out.")
+        #     # It would also be cool to print out the elapsed time, how long it
+        #     # stayed. Can add this if I have the timestamp in the returned
+        #     # detections as well. Not yet, but maybe a future feature. That's
+        #     # simple enough to compute externally in a spreadsheet, too.
 
         # TODO: Add some temporary dictionary to track the number of each
         # species and use that (again, temporarily) to annotate the stream with.
