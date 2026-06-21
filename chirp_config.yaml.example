@@ -1,0 +1,129 @@
+# chirp_config.yaml — copy to chirp_config.yaml and edit to match your setup.
+# CLI flags always override values set here.
+
+# ---------------------------------------------------------------------------
+# Input
+# ---------------------------------------------------------------------------
+
+# Camera device or path to a video file.
+# Use /dev/video0, /dev/video1, etc. for USB/built-in cameras.
+# Use an RTSP URL for network cameras, e.g.:
+#   video_source: rtsp://user:pass@192.168.1.10:554/stream
+video_source: /dev/video0
+
+# ---------------------------------------------------------------------------
+# Detection model
+# ---------------------------------------------------------------------------
+
+# Ultralytics model name (auto-downloaded on first run) or path to a .pt file.
+#
+# Recommended choices:
+#   yolo11n.pt        – fastest, detects generic "bird" (COCO class 14).
+#                       Good for counting; no species differentiation.
+#   yolo11s.pt        – slightly more accurate, still fast.
+#   yolo11m.pt        – balanced speed/accuracy.
+#   <custom>.pt       – fine-tuned species model from Roboflow Universe or
+#                       your own training on NABirds / CUB-200-2011.
+#
+# For per-species identification, use a fine-tuned model. Popular options:
+#   https://universe.roboflow.com/search?q=class:bird+trained+model
+model: yolo11n.pt
+
+# Minimum confidence score to accept a detection (0–1).
+# Lower = more sensitive (catches distant birds, more false positives).
+# Higher = more conservative (misses low-quality detections, fewer false alarms).
+confidence: 0.35
+
+# NMS (non-maximum suppression) IoU overlap threshold.
+# Reduces duplicate boxes for the same bird.
+iou: 0.5
+
+# Comma-separated class IDs to count.
+# Leave commented out to auto-detect (COCO bird=14 is set automatically).
+# For a custom multi-species model, list only the bird class IDs, e.g.:
+#   classes: [0, 1, 2, 3]
+# classes: [14]
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+# Root directory for all output: sessions DB, highlight clips, logs.
+output_directory: ~/chirp_data
+
+# Path to the SQLite database. Defaults to <output_directory>/chirp.db.
+# database: ~/chirp_data/chirp.db
+
+# ---------------------------------------------------------------------------
+# Location (metadata only — used for eBird integration in future)
+# ---------------------------------------------------------------------------
+
+# Approximate GPS coordinates of your feeder. Format: "LAT,LON"
+location: "40.7128,-74.0060"
+
+# ---------------------------------------------------------------------------
+# Tracking
+# ---------------------------------------------------------------------------
+
+# Seconds a lost track is held before it's dropped. Must be ≥ 1.
+# Shorter = faster cleanup; longer = better re-ID across brief occlusions.
+track_buffer: 8
+
+# Frames a detection must be continuously seen before it's counted as an
+# arrival. Defaults to fps/2 (half a second). Increase to reduce false alarms
+# from birds flying quickly through frame.
+# in_threshold: 15
+
+# ---------------------------------------------------------------------------
+# Display
+# ---------------------------------------------------------------------------
+
+# Show a live preview window. Set false for headless / SSH deployments.
+show_display: true
+
+# ---------------------------------------------------------------------------
+# Highlight clips
+# ---------------------------------------------------------------------------
+
+highlights:
+  enabled: true
+  pre_roll: 5    # seconds of footage *before* the bird arrived
+  post_roll: 3   # seconds of footage *after* the bird left
+
+# ---------------------------------------------------------------------------
+# Counting zones (optional)
+# ---------------------------------------------------------------------------
+
+# Define one or more polygon zones within the camera frame.
+# Each detection is counted separately per zone.
+# If omitted, a single full-frame zone named "full_frame" is used.
+#
+# Polygon points are [x, y] pixel coordinates (top-left origin).
+# Tip: use the following one-liner to find pixel coordinates interactively:
+#   python -c "import cv2; cv2.namedWindow('pick'); img = cv2.imread('frame.jpg'); cv2.setMouseCallback('pick', lambda e,x,y,_,__: print(x,y) if e==1 else None); cv2.imshow('pick', img); cv2.waitKey(0)"
+#
+# zones:
+#   - name: feeder
+#     polygon:
+#       - [120, 180]
+#       - [520, 180]
+#       - [520, 420]
+#       - [120, 420]
+#   - name: perch
+#     polygon:
+#       - [200, 80]
+#       - [440, 80]
+#       - [440, 160]
+#       - [200, 160]
+
+# ---------------------------------------------------------------------------
+# Schedule (optional)
+# ---------------------------------------------------------------------------
+
+# Restrict operation to certain hours of the day (24-hour HH:MM format).
+# Chirp will sleep outside the window and wake automatically.
+# Comment out both lines to run continuously.
+#
+# schedule:
+#   start_time: "06:00"
+#   stop_time:  "20:30"

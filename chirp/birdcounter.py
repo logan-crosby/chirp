@@ -1,27 +1,42 @@
-"""Core object detection + tracking bird feeder analysis pipeline.
+"""Core bird detection, tracking, and counting pipeline.
 
-Reads from a camera device or video file and logs bird visit events (CSV +
-JSON) to a session directory. Updated for supervision>=0.29 and
-ultralytics>=8.4.
+Usage
+-----
+    # Via installed CLI entry-point:
+    chirp --config chirp_config.yaml
+
+    # As a module:
+    python -m chirp --config chirp_config.yaml
+
+    # Direct (all options as CLI flags):
+    python chirp/birdcounter.py -v /dev/video0 -l 40.71,-74.00
 """
+from __future__ import annotations
+
 import argparse
 import logging
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from csv import DictWriter
-import json
+from typing import List, Optional, Tuple
 
-import numpy as np
 import cv2 as cv
-
-from ultralytics import YOLO
+import numpy as np
 import supervision as sv
+from ultralytics import YOLO
 
-from zone_monitor import ZoneMonitor
+from chirp.config import ChirpConfig, ZoneConfig, load_config
+from chirp.database import ChirpDatabase
+from chirp.highlights import HighlightRecorder
+from chirp.metrics import SessionMetrics
+from chirp.scheduler import wait_for_window
+from chirp.zone_monitor import ZoneMonitor
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
 
@@ -29,214 +44,180 @@ logger = logging.getLogger(__name__)
 COCO_BIRD_CLASS_ID = 14
 
 
-def main() -> None:
+# ---------------------------------------------------------------------------
+# BirdCounter
+# ---------------------------------------------------------------------------
 
-    parser = argparse.ArgumentParser(
-        description="Chirp – real-time bird feeder detection and counting"
-    )
-    parser.add_argument(
-        "-v", "--video-source",
-        default="/dev/video0", type=str,
-        help="Path to video device (/dev/videoX) or video file. Default: /dev/video0",
-    )
-    parser.add_argument(
-        "-w", "--yolo-weights",
-        default=None, type=str,
-        help=(
-            "Path to YOLO model weights file, or an Ultralytics model name that "
-            "will be auto-downloaded (e.g. 'yolo11n.pt'). "
-            "Defaults to 'yolo11n.pt' when omitted."
-        ),
-    )
-    parser.add_argument(
-        "-o", "--output-directory",
-        default=".", type=str,
-        help="Directory where session output folders will be created. Default: .",
-    )
-    parser.add_argument(
-        "-l", "--location",
-        default=None, type=str,
-        help="Approximate feeder location as 'LAT,LON' (used for metadata).",
-    )
-    parser.add_argument(
-        "--confidence",
-        default=0.35, type=float,
-        help="Minimum detection confidence to accept (0–1). Default: 0.35",
-    )
-    parser.add_argument(
-        "--iou",
-        default=0.5, type=float,
-        help="NMS IoU overlap threshold for deduplicating detections. Default: 0.5",
-    )
-    parser.add_argument(
-        "--classes",
-        default=None, type=str,
-        help=(
-            "Comma-separated class IDs to count (e.g. '14' for COCO bird). "
-            "When omitted with a COCO model, class 14 is used automatically. "
-            "Pass 'all' to disable filtering entirely."
-        ),
-    )
-    parser.add_argument(
-        "--in-threshold",
-        default=None, type=int,
-        help=(
-            "Frames a track must be seen before counting as an arrival. "
-            "Defaults to half a second worth of frames."
-        ),
-    )
-    parser.add_argument(
-        "--track-buffer",
-        default=8, type=int,
-        help="Seconds a track can be absent before being dropped. Default: 8",
-    )
-    parser.add_argument(
-        "--no-display",
-        action="store_true",
-        help="Run headless (no preview window). Useful for unattended yard use.",
-    )
-    args = parser.parse_args()
+class BirdCounter:
+    """End-to-end pipeline: open camera → detect → track → count → log."""
 
-    # --- Validate inputs ---
-    video_source_path = Path(args.video_source)
-    if not video_source_path.exists():
-        raise FileNotFoundError(f"Video source not found: {video_source_path}")
+    def __init__(self, config: ChirpConfig) -> None:
+        self.config = config
+        self._model: Optional[YOLO] = None
+        self._tracker: Optional[sv.ByteTrack] = None
+        self._class_map: dict[int, str] = {}
+        self._bird_class_ids: Optional[set[int]] = None
 
-    model_source = args.yolo_weights if args.yolo_weights else "yolo11n.pt"
+        # Zone state: list of (zone_name, sv.PolygonZone, ZoneMonitor)
+        self._zones: List[Tuple[str, sv.PolygonZone, ZoneMonitor]] = []
 
-    output_directory_path = Path(args.output_directory)
-    if not output_directory_path.exists():
-        raise FileNotFoundError(f"Output directory not found: {output_directory_path}")
+        self._db: Optional[ChirpDatabase] = None
+        self._session_id: Optional[int] = None
+        self._metrics = SessionMetrics()
+        self._highlight_recorder: Optional[HighlightRecorder] = None
 
-    if args.location is None:
-        raise ValueError("--location LAT,LON is required.")
+        # Annotators (set up after camera is opened)
+        self._circle_ann = sv.CircleAnnotator()
+        self._label_ann = sv.LabelAnnotator()
+        self._trace_ann = sv.TraceAnnotator()
 
-    confidence_threshold: float = args.confidence
-    iou_threshold: float = args.iou
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
 
-    # Parse class filter.
-    bird_class_ids: set | None
-    if args.classes and args.classes.lower() != "all":
-        bird_class_ids = {int(c.strip()) for c in args.classes.split(",")}
-    else:
-        bird_class_ids = None  # Resolved after model loads when using COCO weights.
-
-    # --- Create session output directory ---
-    sessions_dir = output_directory_path / "chirp_sessions"
-    sessions_dir.mkdir(exist_ok=True)
-
-    session_datetime = datetime.now(tz=timezone.utc)
-    safe_dt = session_datetime.strftime("%Y%m%dT%H%M%SZ")
-    session_dir = sessions_dir / f"chirp_session_{safe_dt}"
-    session_dir.mkdir()
-    logger.info("Session directory: %s", session_dir)
-
-    # --- Open session CSV ---
-    events_csv_path = session_dir / f"{safe_dt}_session_events.csv"
-    events_file = open(file=events_csv_path, mode="w", newline="")
-    fieldnames = [
-        "datetime", "frame", "zone_id",
-        "class_id", "class_name", "tracker_id", "event_type_id",
-    ]
-    csv_writer = DictWriter(events_file, fieldnames=fieldnames)
-    csv_writer.writeheader()
-
-    EVENT_TYPE_MAPPINGS = {0: "enter", 1: "exit"}
-    ZONE_MAPPINGS = {0: "full_zone"}
-
-    # --- Open camera ---
-    feeder_camera = cv.VideoCapture(str(video_source_path))
-    if not feeder_camera.isOpened():
-        raise RuntimeError("Failed to open video source.")
-    video_fps = feeder_camera.get(cv.CAP_PROP_FPS) or 30.0
-    video_height = int(feeder_camera.get(cv.CAP_PROP_FRAME_HEIGHT))
-    video_width = int(feeder_camera.get(cv.CAP_PROP_FRAME_WIDTH))
-    logger.info("Video: %dx%d @ %.1f fps", video_width, video_height, video_fps)
-
-    # --- Define counting zone (full frame) ---
-    # frame_resolution_wh was removed in supervision 0.24; polygon bounds are sufficient.
-    full_zone_polygon = np.array([
-        [0, 0],
-        [video_width, 0],
-        [video_width, video_height],
-        [0, video_height],
-    ])
-    # triggering_position was renamed to triggering_anchors (list) in supervision 0.20.
-    full_zone = sv.PolygonZone(
-        polygon=full_zone_polygon,
-        triggering_anchors=[sv.Position.CENTER],
-    )
-
-    track_buffer_s: int = args.track_buffer
-    in_threshold = args.in_threshold if args.in_threshold else max(1, int(video_fps) // 2)
-    out_timeout = int(video_fps) * track_buffer_s
-
-    full_zone_monitor = ZoneMonitor(
-        in_threshold=in_threshold,
-        out_timeout=out_timeout,
-    )
-    bird_visit_count = 0
-
-    # --- Load model ---
-    logger.info("Loading model: %s", model_source)
-    model = YOLO(model=model_source)
-    CLASS_MAPPINGS: dict[int, str] = {
-        class_id: str(model.names[class_id]) for class_id in range(len(model.names))
-    }
-
-    # Auto-filter to COCO bird class when no explicit filter is set and the model
-    # uses COCO labels (class 14 == "bird").
-    if bird_class_ids is None and args.classes is None:
-        if CLASS_MAPPINGS.get(COCO_BIRD_CLASS_ID) == "bird":
-            logger.info(
-                "COCO model detected – auto-filtering detections to class %d (bird).",
-                COCO_BIRD_CLASS_ID,
-            )
-            bird_class_ids = {COCO_BIRD_CLASS_ID}
-        else:
-            logger.info(
-                "Non-COCO model with %d classes loaded. Tracking all classes. "
-                "Pass --classes to restrict to specific IDs.",
-                len(CLASS_MAPPINGS),
-            )
-
-    # --- Tracker ---
-    # 'track_buffer' was renamed to 'lost_track_buffer' in supervision 0.23.
-    tracker = sv.ByteTrack(
-        frame_rate=int(video_fps),
-        lost_track_buffer=out_timeout,
-    )
-
-    # --- Annotators ---
-    circle_annotator = sv.CircleAnnotator()
-    label_annotator = sv.LabelAnnotator()
-    trace_annotator = sv.TraceAnnotator()
-
-    # --- Write session metadata ---
-    with open(session_dir / "session_metadata.json", "w") as f:
-        json.dump(
-            {
-                "session_datetime": str(session_datetime),
-                "session_location": args.location,
-                "model_source": model_source,
-                "tracked_class_ids": sorted(bird_class_ids) if bird_class_ids else "all",
-                "confidence_threshold": confidence_threshold,
-                "iou_threshold": iou_threshold,
-                "in_threshold_frames": in_threshold,
-                "track_buffer_seconds": track_buffer_s,
-                "event_type_mappings": EVENT_TYPE_MAPPINGS,
-                "zone_mappings": ZONE_MAPPINGS,
-                "class_mappings": {str(k): v for k, v in CLASS_MAPPINGS.items()},
-            },
-            fp=f,
-            indent=2,
+    def run(self) -> None:
+        """Open the camera, block until done, then clean up."""
+        wait_for_window(
+            self.config.schedule.start_time,
+            self.config.schedule.stop_time,
         )
 
-    frame_counter = 0
+        cfg = self.config
+        cfg.output_directory.mkdir(parents=True, exist_ok=True)
 
-    try:
+        self._db = ChirpDatabase(cfg.effective_database())
+
+        logger.info("Loading model: %s", cfg.model)
+        self._model = YOLO(model=cfg.model)
+        self._class_map = {
+            cid: str(name) for cid, name in self._model.names.items()
+        }
+        self._resolve_class_filter()
+
+        camera = cv.VideoCapture(str(cfg.video_source))
+        if not camera.isOpened():
+            raise RuntimeError(f"Cannot open video source: {cfg.video_source}")
+
+        fps = camera.get(cv.CAP_PROP_FPS) or 30.0
+        height = int(camera.get(cv.CAP_PROP_FRAME_HEIGHT))
+        width = int(camera.get(cv.CAP_PROP_FRAME_WIDTH))
+        logger.info("Video: %dx%d @ %.1f fps", width, height, fps)
+
+        in_threshold = cfg.in_threshold if cfg.in_threshold else max(1, int(fps) // 2)
+        out_timeout = int(fps) * cfg.track_buffer
+
+        self._tracker = sv.ByteTrack(
+            frame_rate=int(fps),
+            lost_track_buffer=out_timeout,
+        )
+
+        self._setup_zones(cfg, width, height, fps, in_threshold, out_timeout)
+
+        # Highlight recorder
+        if cfg.highlights.enabled:
+            highlights_dir = cfg.output_directory / "chirp_sessions" / "highlights"
+            highlights_dir.mkdir(parents=True, exist_ok=True)
+            self._highlight_recorder = HighlightRecorder(
+                output_dir=highlights_dir,
+                fps=fps,
+                frame_size=(width, height),
+                pre_roll_s=cfg.highlights.pre_roll,
+                post_roll_s=cfg.highlights.post_roll,
+            )
+
+        self._session_id = self._db.create_session(
+            started_at=datetime.now(tz=timezone.utc),
+            location=cfg.location,
+            model_source=cfg.model,
+            confidence_threshold=cfg.confidence,
+            iou_threshold=cfg.iou,
+            in_threshold_frames=in_threshold,
+            track_buffer_seconds=cfg.track_buffer,
+        )
+        for zone_name, zone, _ in self._zones:
+            self._db.log_zone_def(
+                self._session_id, zone_name,
+                zone.polygon.tolist(),
+            )
+
+        try:
+            self._main_loop(camera, fps, width, height)
+        finally:
+            camera.release()
+            cv.destroyAllWindows()
+            if self._highlight_recorder:
+                self._highlight_recorder.end_all_clips()
+            self._print_session_summary()
+            if self._db:
+                self._db.close()
+
+    # ------------------------------------------------------------------
+    # Setup helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_class_filter(self) -> None:
+        """Set self._bird_class_ids based on config and model labels."""
+        cfg = self.config
+        if cfg.classes is not None:
+            # Explicit list (empty list = track everything)
+            self._bird_class_ids = set(cfg.classes) if cfg.classes else None
+            return
+
+        # Auto-detect COCO model
+        if self._class_map.get(COCO_BIRD_CLASS_ID) == "bird":
+            logger.info(
+                "COCO model detected – auto-filtering to class %d (bird).",
+                COCO_BIRD_CLASS_ID,
+            )
+            self._bird_class_ids = {COCO_BIRD_CLASS_ID}
+        else:
+            logger.info(
+                "Non-COCO model with %d classes. Tracking all classes. "
+                "Pass classes: [<id>,...] in config to restrict.",
+                len(self._class_map),
+            )
+            self._bird_class_ids = None
+
+    def _setup_zones(self, cfg: ChirpConfig, width: int, height: int,
+                     fps: float, in_threshold: int, out_timeout: int) -> None:
+        """Build sv.PolygonZone + ZoneMonitor for each configured zone."""
+        zone_configs: List[ZoneConfig] = cfg.zones
+        if not zone_configs:
+            # Default: full camera frame
+            zone_configs = [ZoneConfig(
+                name="full_frame",
+                polygon=[[0, 0], [width, 0], [width, height], [0, height]],
+            )]
+
+        for zc in zone_configs:
+            poly = np.array(zc.polygon, dtype=np.int64)
+            zone = sv.PolygonZone(
+                polygon=poly,
+                triggering_anchors=[sv.Position.CENTER],
+            )
+            monitor = ZoneMonitor(
+                in_threshold=in_threshold,
+                out_timeout=out_timeout,
+            )
+            self._zones.append((zc.name, zone, monitor))
+            logger.info("Zone '%s' configured with %d vertices.", zc.name, len(poly))
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
+    def _main_loop(self, camera: cv.VideoCapture,
+                   fps: float, width: int, height: int) -> None:
+        frame_counter = 0
+
         while True:
-            status, frame = feeder_camera.read()
+            # Enforce schedule (check once per second at most)
+            if frame_counter % max(1, int(fps)) == 0:
+                if not _schedule_active(self.config):
+                    logger.info("Reached schedule end time. Stopping.")
+                    break
+
+            status, frame = camera.read()
             if not status:
                 logger.info("End of video stream.")
                 break
@@ -244,109 +225,258 @@ def main() -> None:
             frame_counter += 1
             frame_datetime = datetime.now(tz=timezone.utc)
 
-            # --- Inference ---
-            result = model(frame, verbose=False)[0]
-            detections = sv.Detections.from_ultralytics(ultralytics_results=result)
+            detections = self._detect(frame)
 
-            # --- Filter by confidence ---
-            if detections.confidence is not None and len(detections) > 0:
-                detections = detections[detections.confidence >= confidence_threshold]
+            # Feed highlight recorder before annotation
+            if self._highlight_recorder:
+                self._highlight_recorder.feed_frame(frame)
 
-            # --- NMS: remove overlapping boxes for the same object ---
-            if len(detections) > 0 and detections.class_id is not None:
-                detections = detections.with_nms(threshold=iou_threshold)
-            elif len(detections) > 0:
-                detections = detections.with_nms(threshold=iou_threshold, class_agnostic=True)
+            # Update each zone
+            for zone_name, zone, monitor in self._zones:
+                mask = zone.trigger(detections=detections)
+                in_zone = detections[mask]
+                entered, exited = monitor.update(in_zone, frame_counter, frame_datetime)
+                self._handle_events(entered, exited, zone_name, frame_datetime)
 
-            # --- Filter to target bird classes ---
-            if (
-                bird_class_ids is not None
-                and detections.class_id is not None
-                and len(detections) > 0
-            ):
-                class_mask = np.isin(detections.class_id, list(bird_class_ids))
-                detections = detections[class_mask]
-
-            # --- Track ---
-            detections = tracker.update_with_detections(detections=detections)
-
-            # --- Zone counting ---
-            zone_mask = full_zone.trigger(detections=detections)
-            detections_in_zone = detections[zone_mask]
-            entered_events, exited_events = full_zone_monitor.update(
-                detections_in_zone=detections_in_zone,
-                frame_index=frame_counter,
-                frame_datetime=frame_datetime,
-            )
-            bird_visit_count += len(entered_events)
-
-            for event in entered_events:
-                class_id = event["species_class_id"]
-                class_name = CLASS_MAPPINGS.get(class_id, str(class_id)) if class_id is not None else "unknown"
-                csv_writer.writerow({
-                    "datetime": event["datetime_entered"],
-                    "frame": event["frame_entered"],
-                    "zone_id": 0,
-                    "class_id": class_id,
-                    "class_name": class_name,
-                    "tracker_id": event["tracker_id"],
-                    "event_type_id": 0,
-                })
-                logger.info("ARRIVED  %-20s (track %s)", class_name, event["tracker_id"])
-
-            for event in exited_events:
-                class_id = event["species_class_id"]
-                class_name = CLASS_MAPPINGS.get(class_id, str(class_id)) if class_id is not None else "unknown"
-                csv_writer.writerow({
-                    "datetime": event["datetime_exited"],
-                    "frame": event["frame_exited"],
-                    "zone_id": 0,
-                    "class_id": class_id,
-                    "class_name": class_name,
-                    "tracker_id": event["tracker_id"],
-                    "event_type_id": 1,
-                })
-                logger.info("DEPARTED %-20s (track %s)", class_name, event["tracker_id"])
-
-            # Flush CSV periodically so data isn't lost if the process is killed.
-            if frame_counter % 300 == 0:
-                events_file.flush()
-
-            # --- Visual annotation ---
-            if not args.no_display:
-                labels = []
-                class_ids = detections.class_id if detections.class_id is not None else []
-                tracker_ids = detections.tracker_id if detections.tracker_id is not None else []
-                for cid, tid in zip(class_ids, tracker_ids):
-                    name = CLASS_MAPPINGS.get(int(cid), "?") if cid is not None else "?"
-                    label = f"#{tid} {name}" if tid is not None else name
-                    labels.append(label)
-
-                annotated = circle_annotator.annotate(scene=frame.copy(), detections=detections)
-                annotated = label_annotator.annotate(scene=annotated, detections=detections, labels=labels)
-                annotated = trace_annotator.annotate(scene=annotated, detections=detections)
-                annotated = sv.draw_text(
-                    scene=annotated,
-                    text=f"Bird Visits Today: {bird_visit_count}",
-                    text_anchor=sv.Point(x=200, y=40),
-                    text_color=sv.Color.WHITE,
-                    background_color=sv.Color.BLACK,
-                    text_scale=1.0,
-                    text_thickness=2,
-                )
-
-                preview = cv.resize(annotated, (video_width // 2, video_height // 2))
+            # Display
+            if self.config.show_display:
+                annotated = self._annotate(frame, detections)
+                preview = cv.resize(annotated, (width // 2, height // 2))
                 cv.imshow("Chirp – Bird Counter", preview)
                 if cv.waitKey(1) == ord("q"):
                     logger.info("User quit.")
                     break
 
-    finally:
-        feeder_camera.release()
-        cv.destroyAllWindows()
-        events_file.close()
-        logger.info("Session complete. Total bird visits: %d", bird_visit_count)
-        logger.info("Events logged to: %s", events_csv_path)
+    # ------------------------------------------------------------------
+    # Detection
+    # ------------------------------------------------------------------
+
+    def _detect(self, frame: np.ndarray) -> sv.Detections:
+        """Run inference, filter, NMS, and track; return updated Detections."""
+        result = self._model(frame, verbose=False)[0]
+        detections = sv.Detections.from_ultralytics(ultralytics_results=result)
+
+        # Confidence filter
+        if detections.confidence is not None and len(detections) > 0:
+            detections = detections[
+                detections.confidence >= self.config.confidence
+            ]
+
+        # NMS deduplication
+        if len(detections) > 0:
+            if detections.class_id is not None:
+                detections = detections.with_nms(threshold=self.config.iou)
+            else:
+                detections = detections.with_nms(
+                    threshold=self.config.iou, class_agnostic=True
+                )
+
+        # Class filter
+        if (
+            self._bird_class_ids is not None
+            and detections.class_id is not None
+            and len(detections) > 0
+        ):
+            mask = np.isin(detections.class_id, list(self._bird_class_ids))
+            detections = detections[mask]
+
+        # Track
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            detections = self._tracker.update_with_detections(detections=detections)
+
+        return detections
+
+    # ------------------------------------------------------------------
+    # Event handling
+    # ------------------------------------------------------------------
+
+    def _handle_events(self,
+                       entered: list, exited: list,
+                       zone_name: str,
+                       frame_datetime: datetime) -> None:
+        for event in entered:
+            cid = event["species_class_id"]
+            name = self._class_map.get(cid, "unknown") if cid is not None else "unknown"
+            tid = event["tracker_id"]
+            fseen = event.get("class_id_counts", {})
+            frames_seen = sum(fseen.values()) if fseen else 0
+
+            self._db.log_event(
+                session_id=self._session_id,
+                event_type="enter",
+                occurred_at=event["datetime_entered"],
+                frame_number=event["frame_entered"],
+                zone_name=zone_name,
+                tracker_id=tid,
+                class_id=cid,
+                class_name=name,
+                frames_seen=frames_seen,
+                class_id_counts={int(k): v for k, v in fseen.items()},
+            )
+            self._metrics.record_arrival(tid, name, zone_name, event["datetime_entered"])
+            logger.info("ARRIVED  %-24s (track %s  zone:%s)", name, tid, zone_name)
+
+            if self._highlight_recorder:
+                self._highlight_recorder.start_clip(tracker_id=tid, label=name)
+
+        for event in exited:
+            cid = event["species_class_id"]
+            name = self._class_map.get(cid, "unknown") if cid is not None else "unknown"
+            tid = event["tracker_id"]
+            fseen = event.get("class_id_counts", {})
+            frames_seen = sum(fseen.values()) if fseen else 0
+
+            self._db.log_event(
+                session_id=self._session_id,
+                event_type="exit",
+                occurred_at=event["datetime_exited"],
+                frame_number=event["frame_exited"],
+                zone_name=zone_name,
+                tracker_id=tid,
+                class_id=cid,
+                class_name=name,
+                frames_seen=frames_seen,
+                class_id_counts={int(k): v for k, v in fseen.items()},
+            )
+            self._metrics.record_departure(tid, event["datetime_exited"])
+            logger.info("DEPARTED %-24s (track %s  zone:%s)", name, tid, zone_name)
+
+            if self._highlight_recorder:
+                self._highlight_recorder.end_clip(tracker_id=tid)
+
+    # ------------------------------------------------------------------
+    # Annotation
+    # ------------------------------------------------------------------
+
+    def _annotate(self, frame: np.ndarray,
+                  detections: sv.Detections) -> np.ndarray:
+        labels = []
+        cids = detections.class_id if detections.class_id is not None else []
+        tids = detections.tracker_id if detections.tracker_id is not None else []
+        for cid, tid in zip(cids, tids):
+            name = self._class_map.get(int(cid), "?") if cid is not None else "?"
+            labels.append(f"#{tid} {name}" if tid is not None else name)
+
+        out = self._circle_ann.annotate(scene=frame.copy(), detections=detections)
+        out = self._label_ann.annotate(scene=out, detections=detections, labels=labels)
+        out = self._trace_ann.annotate(scene=out, detections=detections)
+
+        # Live stats overlay
+        overlay_lines = [f"Visits: {self._metrics.total_visits}"]
+        overlay_lines += self._metrics.species_table_lines()
+        y = 30
+        for line in overlay_lines:
+            out = sv.draw_text(
+                scene=out,
+                text=line,
+                text_anchor=sv.Point(x=10, y=y),
+                text_color=sv.Color.WHITE,
+                background_color=sv.Color.BLACK,
+                text_scale=0.6,
+                text_thickness=1,
+            )
+            y += 22
+
+        return out
+
+    # ------------------------------------------------------------------
+    # Session summary
+    # ------------------------------------------------------------------
+
+    def _print_session_summary(self) -> None:
+        from chirp.metrics import (
+            print_species_summary,
+            print_visit_durations,
+            print_recent_visitors,
+        )
+        print("\n" + "=" * 50)
+        print("  SESSION COMPLETE")
+        print("=" * 50)
+        print(self._metrics.summary_text())
+        if self._db and self._session_id:
+            print_visit_durations(self._db, session_id=self._session_id)
+            print_recent_visitors(self._db, limit=10)
+
+
+# ---------------------------------------------------------------------------
+# CLI / entrypoint
+# ---------------------------------------------------------------------------
+
+def _schedule_active(cfg: ChirpConfig) -> bool:
+    from chirp.scheduler import is_within_window
+    return is_within_window(cfg.schedule.start_time, cfg.schedule.stop_time)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="chirp – real-time bird feeder detection and counting",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("--config", "-c", metavar="FILE", default=None,
+                   help="Path to YAML config file.")
+    p.add_argument("-v", "--video-source", metavar="PATH",
+                   help="Camera device or video file.")
+    p.add_argument("-m", "--model", metavar="WEIGHTS",
+                   help="Ultralytics model name or path to .pt file.")
+    p.add_argument("-o", "--output-directory", metavar="DIR",
+                   help="Root directory for session data and the SQLite DB.")
+    p.add_argument("-l", "--location", metavar="LAT,LON",
+                   help="Approximate feeder location (stored in metadata).")
+    p.add_argument("--confidence", metavar="FLOAT", type=float,
+                   help="Minimum detection confidence (0–1).")
+    p.add_argument("--iou", metavar="FLOAT", type=float,
+                   help="NMS IoU deduplication threshold.")
+    p.add_argument("--classes", metavar="IDS",
+                   help="Comma-separated class IDs to count, or 'all'.")
+    p.add_argument("--in-threshold", metavar="N", type=int,
+                   help="Frames before a detection is counted as an arrival.")
+    p.add_argument("--track-buffer", metavar="S", type=int,
+                   help="Seconds a lost track is held before dropping.")
+    p.add_argument("--no-display", action="store_true",
+                   help="Run headless (no preview window).")
+    p.add_argument("--no-highlights", action="store_true",
+                   help="Disable highlight clip recording.")
+    p.add_argument("--stats", action="store_true",
+                   help="Print historical stats from the database and exit.")
+    p.add_argument("--stats-days", metavar="N", type=int, default=7,
+                   help="Days of history to include when --stats is used.")
+    return p
+
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    config_path = Path(args.config) if args.config else None
+    if config_path is None:
+        # Look for chirp_config.yaml in the current directory
+        default_cfg = Path("chirp_config.yaml")
+        if default_cfg.exists():
+            config_path = default_cfg
+
+    cfg = load_config(args=args, config_file=config_path)
+
+    # --stats mode: print analytics and exit
+    if args.stats:
+        db = ChirpDatabase(cfg.effective_database())
+        from chirp.metrics import (
+            print_species_summary,
+            print_hourly_activity,
+            print_recent_visitors,
+        )
+        print_species_summary(db, days=args.stats_days)
+        print_hourly_activity(db, days=args.stats_days)
+        print_recent_visitors(db, limit=20)
+        db.close()
+        return
+
+    if cfg.location is None:
+        parser.error("--location LAT,LON is required (or set 'location' in config).")
+
+    counter = BirdCounter(cfg)
+    counter.run()
 
 
 if __name__ == "__main__":
