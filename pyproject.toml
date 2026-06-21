@@ -8,8 +8,8 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-supervision = "^0.17.1"
-ultralytics = "^8.1.0"
+supervision = "^0.29.0"
+ultralytics = "^8.4.0"
 
 
 [build-system]
