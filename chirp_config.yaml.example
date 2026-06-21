@@ -27,7 +27,7 @@ video_source: /dev/video0
 #
 # For per-species identification, use a fine-tuned model. Popular options:
 #   https://universe.roboflow.com/search?q=class:bird+trained+model
-model: yolo11n.pt
+model: yolo26n.pt
 
 # Minimum confidence score to accept a detection (0–1).
 # Lower = more sensitive (catches distant birds, more false positives).
