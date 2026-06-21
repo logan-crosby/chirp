@@ -36,7 +36,7 @@ class ChirpConfig:
     video_source: str = "/dev/video0"
 
     # Model
-    model: str = "yolo11n.pt"
+    model: str = "yolo26n.pt"
     confidence: float = 0.35
     iou: float = 0.5
     classes: Optional[List[int]] = None  # None = auto-detect; empty list = all

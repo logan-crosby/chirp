@@ -17,6 +17,7 @@ import argparse
 import logging
 import sys
 import time
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -178,6 +179,15 @@ class BirdCounter:
             )
             self._bird_class_ids = None
 
+    def _is_nms_free(self) -> bool:
+        """Return True when the loaded model uses end-to-end NMS-free inference.
+
+        YOLO26 has a one-to-one detection head that eliminates duplicate boxes
+        natively, so running with_nms() post-inference is unnecessary.
+        """
+        name = str(self.config.model).lower()
+        return "yolo26" in name
+
     def _setup_zones(self, cfg: ChirpConfig, width: int, height: int,
                      fps: float, in_threshold: int, out_timeout: int) -> None:
         """Build sv.PolygonZone + ZoneMonitor for each configured zone."""
@@ -206,9 +216,29 @@ class BirdCounter:
     # Main loop
     # ------------------------------------------------------------------
 
+    def _reconnect(self, camera: cv.VideoCapture,
+                   max_retries: int = 8) -> bool:
+        """Try to reopen a dropped camera device with exponential backoff."""
+        src = str(self.config.video_source)
+        for attempt in range(1, max_retries + 1):
+            delay = min(2 ** attempt, 60)
+            logger.warning(
+                "Camera read failed. Reconnect attempt %d/%d (wait %ds)…",
+                attempt, max_retries, delay,
+            )
+            time.sleep(delay)
+            camera.release()
+            camera.open(src)
+            if camera.isOpened():
+                logger.info("Camera reconnected.")
+                return True
+        logger.error("Could not reconnect after %d attempts. Stopping.", max_retries)
+        return False
+
     def _main_loop(self, camera: cv.VideoCapture,
                    fps: float, width: int, height: int) -> None:
         frame_counter = 0
+        is_device = str(self.config.video_source).startswith("/dev/video")
 
         while True:
             # Enforce schedule (check once per second at most)
@@ -219,8 +249,14 @@ class BirdCounter:
 
             status, frame = camera.read()
             if not status:
-                logger.info("End of video stream.")
-                break
+                if is_device:
+                    # Camera device — attempt to reconnect before giving up
+                    if not self._reconnect(camera):
+                        break
+                    continue
+                else:
+                    logger.info("End of video file.")
+                    break
 
             frame_counter += 1
             frame_datetime = datetime.now(tz=timezone.utc)
@@ -252,18 +288,27 @@ class BirdCounter:
     # ------------------------------------------------------------------
 
     def _detect(self, frame: np.ndarray) -> sv.Detections:
-        """Run inference, filter, NMS, and track; return updated Detections."""
-        result = self._model(frame, verbose=False)[0]
+        """Run inference, filter, NMS, and track; return updated Detections.
+
+        Class IDs are passed directly to the model so the inference kernel
+        skips non-bird categories entirely — faster than post-filtering.
+        YOLO26 outputs are NMS-free by design; we skip the NMS step for it.
+        """
+        infer_classes = (
+            list(self._bird_class_ids)
+            if self._bird_class_ids is not None
+            else None
+        )
+        result = self._model(
+            frame,
+            verbose=False,
+            conf=self.config.confidence,
+            classes=infer_classes,
+        )[0]
         detections = sv.Detections.from_ultralytics(ultralytics_results=result)
 
-        # Confidence filter
-        if detections.confidence is not None and len(detections) > 0:
-            detections = detections[
-                detections.confidence >= self.config.confidence
-            ]
-
-        # NMS deduplication
-        if len(detections) > 0:
+        # NMS deduplication — skip for YOLO26 which is already NMS-free.
+        if len(detections) > 0 and not self._is_nms_free():
             if detections.class_id is not None:
                 detections = detections.with_nms(threshold=self.config.iou)
             else:
@@ -271,17 +316,7 @@ class BirdCounter:
                     threshold=self.config.iou, class_agnostic=True
                 )
 
-        # Class filter
-        if (
-            self._bird_class_ids is not None
-            and detections.class_id is not None
-            and len(detections) > 0
-        ):
-            mask = np.isin(detections.class_id, list(self._bird_class_ids))
-            detections = detections[mask]
-
-        # Track
-        import warnings
+        # Track (ByteTrack is deprecated in sv 0.28+ but still functional in 0.29)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", FutureWarning)
             detections = self._tracker.update_with_detections(detections=detections)
@@ -404,6 +439,31 @@ class BirdCounter:
 # CLI / entrypoint
 # ---------------------------------------------------------------------------
 
+def _export_csv(cfg: ChirpConfig, output_path: Path) -> None:
+    """Dump all bird_events from the database to a CSV file."""
+    import csv
+    db = ChirpDatabase(cfg.effective_database())
+    conn = db.get_connection()
+    rows = conn.execute(
+        """SELECT s.started_at AS session_started, s.location,
+                  e.event_type, e.occurred_at, e.zone_name,
+                  e.class_name, e.tracker_id, e.frames_seen
+           FROM bird_events e
+           JOIN sessions s ON s.id = e.session_id
+           ORDER BY e.occurred_at"""
+    ).fetchall()
+    db.close()
+    with open(output_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "session_started", "location", "event_type", "occurred_at",
+            "zone_name", "class_name", "tracker_id", "frames_seen",
+        ])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(dict(row))
+    logger.info("Exported %d events to %s", len(rows), output_path)
+
+
 def _schedule_active(cfg: ChirpConfig) -> bool:
     from chirp.scheduler import is_within_window
     return is_within_window(cfg.schedule.start_time, cfg.schedule.stop_time)
@@ -442,6 +502,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Print historical stats from the database and exit.")
     p.add_argument("--stats-days", metavar="N", type=int, default=7,
                    help="Days of history to include when --stats is used.")
+    p.add_argument("--export", metavar="FILE",
+                   help="Export all bird_events from the database to a CSV file and exit.")
     return p
 
 
@@ -457,6 +519,11 @@ def main() -> None:
             config_path = default_cfg
 
     cfg = load_config(args=args, config_file=config_path)
+
+    # --export mode: dump DB to CSV and exit
+    if getattr(args, "export", None):
+        _export_csv(cfg, Path(args.export))
+        return
 
     # --stats mode: print analytics and exit
     if args.stats:
