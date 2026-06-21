@@ -1,16 +1,29 @@
 [tool.poetry]
 name = "chirp"
-version = "0.1.0"
-description = "Scripts, tools, and utilities for analyzing bird feeder live streams"
+version = "0.2.0"
+description = "Real-time bird detection, tracking, and species counting for backyard feeders"
 authors = ["Nathan Litzinger <nlitz88@gmail.com>"]
 license = "MIT"
 readme = "README.md"
+packages = [{include = "chirp"}]
+
+[tool.poetry.scripts]
+chirp = "chirp.birdcounter:main"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-supervision = "^0.17.1"
-ultralytics = "^8.1.0"
+supervision = "^0.29.0"
+ultralytics = "^8.4.0"
+pyyaml = ">=6.0"
+numpy = ">=1.26"
+opencv-python = ">=4.8"
 
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
 
 [build-system]
 requires = ["poetry-core"]
