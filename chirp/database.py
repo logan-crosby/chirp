@@ -266,29 +266,58 @@ class ChirpDatabase:
         return row[0] if row else 0
 
     def visit_durations(self, session_id: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Pair enter/exit events by tracker_id to compute visit durations in seconds."""
+        """Pair each enter event with its next valid exit and compute duration.
+
+        A tracker ID can appear in more than one visit during a session. Pairing
+        every enter with every exit would create duplicate, negative, or inflated
+        durations. Each arrival is therefore matched only to the first exit after
+        it and before the next arrival for the same tracker and zone.
+        """
         conditions = ""
         params: list = []
         if session_id is not None:
-            conditions = "AND e.session_id=? AND x.session_id=?"
-            params = [session_id, session_id]
+            conditions = "AND e.session_id=?"
+            params = [session_id]
         rows = self._conn.execute(
-            f"""SELECT e.class_name                               AS species,
-                       e.tracker_id,
-                       e.occurred_at                             AS arrived_at,
-                       x.occurred_at                             AS departed_at,
+            f"""WITH paired AS (
+                    SELECT e.class_name AS species,
+                           e.tracker_id,
+                           e.occurred_at AS arrived_at,
+                           (
+                               SELECT MIN(x.occurred_at)
+                               FROM bird_events x
+                               WHERE x.session_id = e.session_id
+                                 AND x.tracker_id = e.tracker_id
+                                 AND x.zone_name = e.zone_name
+                                 AND x.event_type = 'exit'
+                                 AND x.occurred_at >= e.occurred_at
+                                 AND x.occurred_at < COALESCE(
+                                     (
+                                         SELECT MIN(n.occurred_at)
+                                         FROM bird_events n
+                                         WHERE n.session_id = e.session_id
+                                           AND n.tracker_id = e.tracker_id
+                                           AND n.zone_name = e.zone_name
+                                           AND n.event_type = 'enter'
+                                           AND n.occurred_at > e.occurred_at
+                                     ),
+                                     '9999-12-31T23:59:59.999999+00:00'
+                                 )
+                           ) AS departed_at
+                    FROM bird_events e
+                    WHERE e.event_type = 'enter'
+                    {conditions}
+                )
+                SELECT species,
+                       tracker_id,
+                       arrived_at,
+                       departed_at,
                        ROUND(
-                           (julianday(x.occurred_at) - julianday(e.occurred_at)) * 86400
-                       )                                         AS duration_seconds
-                FROM bird_events e
-                JOIN bird_events x
-                     ON  x.tracker_id  = e.tracker_id
-                     AND x.session_id  = e.session_id
-                     AND x.zone_name   = e.zone_name
-                     AND x.event_type  = 'exit'
-                WHERE e.event_type = 'enter'
-                {conditions}
-                ORDER BY e.occurred_at DESC""",
+                           (julianday(departed_at) - julianday(arrived_at)) * 86400
+                       ) AS duration_seconds
+                FROM paired
+                WHERE departed_at IS NOT NULL
+                ORDER BY arrived_at DESC""",
             params,
         ).fetchall()
         return [dict(r) for r in rows]
